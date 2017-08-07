@@ -1,33 +1,128 @@
-// buildApp = (req, res) => {
-//   TO DO:
-//   1. use config object in req to  
-// };
+const fs = require('fs');
+const child_process = require('child_process');
+const AWS = require('aws-sdk');
+const AdmZip = require('adm-zip');
 
-// getData = (config) => {
-//   TODO: Get data from DB using config
-// }
+const s3 = new AWS.S3();
+const dynamodb = new AWS.DynamoDB();
+const docClient = new AWS.DynamoDB.DocumentClient();
+const bucket = 'cube-factory-demo';
+const bucketUrl = 'http://cube-factory-demo.amazonaws.com';
+const instanceId = Date.now().toString();
 
-// getTemplateApp = => {
-//   TODO: Get copy of "app" file from S3 bucket folder
-// }
+function createTempDir () {
+  return new Promise((resolve, reject) => 
+    fs.mkdtemp('cube', (error, path) => {
+      if (error) {
+        reject(error)
+      }
+      resolve(path);
+    });
+}
 
-// makeDataFile = => {
-//   TODO: write datafile using data pulled from DB
-// }
+function makeDataFile (path, data) {
+  data = JSON.stringify(data);
+  return new Promise((resolve, reject) => {
+    fs.writeFile(dataPath, data, (err) => {
+      if (err) reject("Unable to write data to file.", JSON.stringify(err, null, 2));
+      resolve();
+    });  
+  });
+}
 
-// zipApp = => {
-//   TODO: zip template file and data file together
-// }
+function getData (config, path) {
+  var table = "DemoUsers";
+  var ids = config.users;
+  var path = path + '/user_data'
+  var params = {
+    TableName: table,
+  };
+  return Promise.all(ids.map((id) => {
+    params['Key'] = {
+      "ID": id
+    }
+    return new Promise((resolve, reject) => {
+      docClient.get(params, (err, data) => {
+        if (err) {
+          reject("Unable to read user data. Error JSON:", JSON.stringify(err, null, 2));
+        } else {
+          console.log("Get data succeeded.", JSON.stringify(data, null, 2));
+          resolve(data);
+        } 
+      });
+    }
+  })
+  .then(arr => makeDataFile(path, arr.join("\n")));
+}
 
-// pushBundleToCloud = (bundle) => {
-//   TODO: push bundle to S3 bucket folder and return key
-// }
+function getTemplateApp (tempPath) {
+  var params = {
+    Bucket: bucket, 
+    Key: "appTemplate/dummyApp.js"
+  };
+  return new Promise((resolve, reject) => {
+    s3.getObject(params, (err, data) => {
+      if (err) reject(console.log(err, err.stack)); 
+      var path = tempPath + '/app'    
+      console.log(data);  
+      resolve(makeDataFile(path, data));     
+    });
+  };
+}
 
-// TODO: 
-//  - set up main folder directory in S3 bucket
-//  - setup dynamo db 
-//  - cloudfront CDN
+function zipApp (tempPath, dataPath) {
+  var zipCommand = 'zip -r ' + path + ' ' + dataPath;
+  return new Promise((resolve, reject) => {
+    child_process.exec(zipCommand, (err) => {
+      if (err) reject(console.error("Unable to zip files.", JSON.stringify(err, null, 2)));
+      resolve();
+    });
+  });
+}
 
-// module.exports = {
-//   buildApp: buildApp
-// }
+function pushBundleToCloud (bundle) {
+  var key = "appInstances/" + instanceId;
+  var params = {
+    Bucket: bucket,
+    Key: key
+  };
+
+  s3.putObject(params, (err, data) => {
+    if (err) console.log(err, err.stack); 
+    else console.log(data);           
+  });
+}
+
+function clearTempDir (path) {
+  child_process('rm -r ' + path, (err) => {
+    console.error("Unable to zip files.", JSON.stringify(err, null, 2));
+ });
+};
+
+function buildApp (req, res) {
+  var path = null;
+  createTempDir()
+  .then((tempPath) => {
+    path = tempPath;
+    return getData(req.body, tempPath);
+  } 
+  .then(() => {
+    return getTemplateApp(path);
+  })
+  .then(() => {
+    return zipApp(tempPath, dataPath);
+  })
+  .then(() => {
+    return pushBundleToCloud();
+  }
+  .then(() => {
+    clearTempDir(tempPath);
+    res.send(JSON.stringify(bucketUrl + '/instanceId'));
+  })
+  .catch(res.status(500).send(JSON.stringify(error));
+};
+
+module.exports = {
+  buildApp: buildApp
+}
+
