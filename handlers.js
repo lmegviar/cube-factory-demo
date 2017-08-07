@@ -65,13 +65,15 @@ function getTemplateApp (tempPath) {
     Bucket: bucket, 
     Key: "appTemplate/dummyApp.js"
   };
+  var appPath = tempPath + '/app';
+  console.log('appPath: ', appPath);
+  var file = fs.createWriteStream(appPath);
   return new Promise((resolve, reject) => {
-    s3.getObject(params, (err, data) => {
-      if (err) reject(console.log(err, err.stack)); 
-      var path = tempPath + '/app'    
-      console.log(data);  
-      resolve(makeDataFile(path, data));     
-    });
+    s3.getObject(params).createReadStream().on('end', () => { 
+      return resolve(); 
+    }).on('error', (error) => { 
+      return reject(error); 
+    }).pipe(file)
   });
 }
 
@@ -80,6 +82,7 @@ function zipApp (path, dataPath, appPath) {
   return new Promise((resolve, reject) => {
     child_process.exec(zipCommand, (err) => {
       if (err) reject(console.err("Unable to zip files." + JSON.stringify(err, null, 2)));
+      console.log('App zip succeeded.')
       resolve();
     });
   });
@@ -98,8 +101,11 @@ function pushBundleToCloud (path) {
         ACL: 'public-read'
       };
       s3.upload(params, (err, data) => {
-        if (err) reject(err); 
-        else resolve(data);           
+        if (err) reject(err);
+        else {
+          console.log('Bundle push succeeded. Data: ', data);
+          resolve(data); 
+        }          
       });
     });  
   });
