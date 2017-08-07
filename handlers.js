@@ -1,30 +1,34 @@
+const AWS = require('aws-sdk');
+AWS.config.update({
+  region: "us-east-1",
+});
+
 const fs = require('fs');
 const child_process = require('child_process');
-const AWS = require('aws-sdk');
-const AdmZip = require('adm-zip');
-
 const s3 = new AWS.S3();
 const dynamodb = new AWS.DynamoDB();
 const docClient = new AWS.DynamoDB.DocumentClient();
 const bucket = 'cube-factory-demo';
 const bucketUrl = 'http://cube-factory-demo.amazonaws.com';
-const instanceId = Date.now().toString();
+const tempPath = null;
+
 
 function createTempDir () {
-  return new Promise((resolve, reject) => 
-    fs.mkdtemp('cube', (error, path) => {
-      if (error) {
-        reject(error)
+  return new Promise((resolve, reject) => {
+    fs.mkdtemp('cube', (err, path) => {
+      if (err) {
+        reject(err)
       }
       resolve(path);
     });
+  });
 }
 
 function makeDataFile (path, data) {
   data = JSON.stringify(data);
   return new Promise((resolve, reject) => {
-    fs.writeFile(dataPath, data, (err) => {
-      if (err) reject("Unable to write data to file.", JSON.stringify(err, null, 2));
+    fs.writeFile(path, data, (err) => {
+      if (err) reject("Unable to write data to file." + JSON.stringify(err, null, 2));
       resolve();
     });  
   });
@@ -34,25 +38,26 @@ function getData (config, path) {
   var table = "DemoUsers";
   var ids = config.users;
   var path = path + '/user_data'
-  var params = {
-    TableName: table,
-  };
+
   return Promise.all(ids.map((id) => {
-    params['Key'] = {
-      "ID": id
-    }
+    let params = {
+      TableName: table,
+      Key: {
+        "firstName": id
+      }
+    };
     return new Promise((resolve, reject) => {
       docClient.get(params, (err, data) => {
         if (err) {
-          reject("Unable to read user data. Error JSON:", JSON.stringify(err, null, 2));
+          reject("Unable to read user data. Error JSON:" + JSON.stringify(err, null, 2));
         } else {
-          console.log("Get data succeeded.", JSON.stringify(data, null, 2));
+          console.log("Get data succeeded.", JSON.stringify(data));
           resolve(data);
         } 
       });
-    }
-  })
-  .then(arr => makeDataFile(path, arr.join("\n")));
+    });
+  }))
+  .then(arr => makeDataFile(path, arr.map(JSON.stringify).join("\n")));
 }
 
 function getTemplateApp (tempPath) {
@@ -67,35 +72,43 @@ function getTemplateApp (tempPath) {
       console.log(data);  
       resolve(makeDataFile(path, data));     
     });
-  };
+  });
 }
 
-function zipApp (tempPath, dataPath) {
-  var zipCommand = 'zip -r ' + path + ' ' + dataPath;
+function zipApp (path, dataPath, appPath) {
+  var zipCommand = 'zip -r ' + path + ' ' + dataPath + ' ' + appPath;
   return new Promise((resolve, reject) => {
     child_process.exec(zipCommand, (err) => {
-      if (err) reject(console.error("Unable to zip files.", JSON.stringify(err, null, 2)));
+      if (err) reject(console.err("Unable to zip files." + JSON.stringify(err, null, 2)));
       resolve();
     });
   });
 }
 
-function pushBundleToCloud (bundle) {
-  var key = "appInstances/" + instanceId;
-  var params = {
-    Bucket: bucket,
-    Key: key
-  };
-
-  s3.putObject(params, (err, data) => {
-    if (err) console.log(err, err.stack); 
-    else console.log(data);           
+function pushBundleToCloud (path) {
+  return new Promise ((resolve, reject) => {
+    var stream = fs.createReadStream(path + '.zip')
+    var key = "appInstances/" + path + '.zip';
+    stream.on('error', reject);
+    stream.on('open', function () {
+      var params = {
+        Body: stream,
+        Bucket: bucket,
+        Key: key,
+        ACL: 'public-read'
+      };
+      s3.upload(params, (err, data) => {
+        if (err) reject(err); 
+        else resolve(data);           
+      });
+    });  
   });
 }
 
 function clearTempDir (path) {
-  child_process('rm -r ' + path, (err) => {
-    console.error("Unable to zip files.", JSON.stringify(err, null, 2));
+  var removeCommand1 = 'rm -r ' + path + ' ' + path + '.zip';
+  child_process(removeCommand, (err) => {
+    console.err("Unable to delete temp files.", JSON.stringify(err, null, 2));
  });
 };
 
@@ -105,21 +118,25 @@ function buildApp (req, res) {
   .then((tempPath) => {
     path = tempPath;
     return getData(req.body, tempPath);
-  } 
+  })
   .then(() => {
     return getTemplateApp(path);
   })
   .then(() => {
-    return zipApp(tempPath, dataPath);
+    var dataPath = path + '/user_data'
+    var appPath = path + '/app'
+    return zipApp(path, dataPath, appPath);
   })
   .then(() => {
-    return pushBundleToCloud();
-  }
-  .then(() => {
-    clearTempDir(tempPath);
-    res.send(JSON.stringify(bucketUrl + '/instanceId'));
+    return pushBundleToCloud(path);
   })
-  .catch(res.status(500).send(JSON.stringify(error));
+  .then(() => {
+    clearTempDir(path);
+    var url = bucketUrl + '/instanceId';
+    console.log('url: ', url);
+    res.send(JSON.stringify({url: url}));
+  })
+  .catch(err => res.status(500).send(JSON.stringify(err)));
 };
 
 module.exports = {
